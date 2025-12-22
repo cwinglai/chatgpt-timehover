@@ -8,4 +8,3 @@ Customizable settings
 
 <img width="347" height="444" alt="Screenshot 2025-12-09 at 11 47 07 PM" src="https://github.com/user-attachments/assets/e9003058-3814-42ae-a31e-e6a9f3c325b6" />
 
-Src code still a work in progress...
