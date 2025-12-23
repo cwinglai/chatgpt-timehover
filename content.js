@@ -66,38 +66,44 @@ function formatTimestamp(date, settings) {
 }
 
 async function loadSettings() {
-  return new Promise((resolve) => {
-    chrome.storage.sync.get([CONFIG.storageKeys.settings], (result) => {
-      if (result[CONFIG.storageKeys.settings]) {
-        currentSettings = { ...CONFIG.defaults, ...result[CONFIG.storageKeys.settings] };
-      }
-      resolve(currentSettings);
-    });
-  });
+  try {
+    const result = await chrome.storage.sync.get([CONFIG.storageKeys.settings]);
+    if (result[CONFIG.storageKeys.settings]) {
+      currentSettings = { ...CONFIG.defaults, ...result[CONFIG.storageKeys.settings] };
+    }
+  } catch (e) {
+    console.log('Storage not available in MAIN world, using defaults');
+  }
+  return currentSettings;
 }
 
 async function saveSettings(settings) {
   currentSettings = { ...currentSettings, ...settings };
-  return new Promise((resolve) => {
-    chrome.storage.sync.set({ [CONFIG.storageKeys.settings]: currentSettings }, resolve);
-  });
+  try {
+    await chrome.storage.sync.set({ [CONFIG.storageKeys.settings]: currentSettings });
+  } catch (e) {
+    console.log('Storage not available in MAIN world');
+  }
 }
 
 async function loadTimestamps() {
-  return new Promise((resolve) => {
-    chrome.storage.local.get([CONFIG.storageKeys.timestamps], (result) => {
-      if (result[CONFIG.storageKeys.timestamps]) {
-        messageTimestamps = result[CONFIG.storageKeys.timestamps];
-      }
-      resolve(messageTimestamps);
-    });
-  });
+  try {
+    const result = await chrome.storage.local.get([CONFIG.storageKeys.timestamps]);
+    if (result[CONFIG.storageKeys.timestamps]) {
+      messageTimestamps = result[CONFIG.storageKeys.timestamps];
+    }
+  } catch (e) {
+    console.log('Storage not available in MAIN world');
+  }
+  return messageTimestamps;
 }
 
 async function saveTimestamps() {
-  return new Promise((resolve) => {
-    chrome.storage.local.set({ [CONFIG.storageKeys.timestamps]: messageTimestamps }, resolve);
-  });
+  try {
+    await chrome.storage.local.set({ [CONFIG.storageKeys.timestamps]: messageTimestamps });
+  } catch (e) {
+    console.log('Storage not available in MAIN world');
+  }
 }
 
 function extractTimestampFromDOM(element) {
@@ -212,83 +218,41 @@ function attachTimestampDisplay(messageElement, messageId) {
   messageElement.addEventListener('mouseleave', hideTimestamp);
 }
 
-function scanForMessages() {
-  // Scan for messages with data-message-id (React approach)
+function addTimestamps() {
   document.querySelectorAll('div[data-message-id]').forEach(div => {
-    if (div.dataset.timestampProcessed) return;
+    if (div.dataset.timestampAdded) return;
     
     const reactKey = Object.keys(div).find(k => k.startsWith('__reactFiber$'));
-    if (reactKey) {
-      const fiber = div[reactKey];
-      const messages = fiber?.return?.memoizedProps?.messages;
-      const timestamp = messages?.[0]?.create_time;
-      if (timestamp) {
-        const messageId = generateMessageId(div);
-        if (!messageTimestamps[messageId]) {
-          messageTimestamps[messageId] = new Date(timestamp * 1000).toISOString();
-          saveTimestamps();
-        }
-        attachTimestampDisplay(div, messageId);
-        div.dataset.timestampProcessed = 'true';
-      }
+    if (!reactKey) return;
+    
+    const fiber = div[reactKey];
+    const messages = fiber?.return?.memoizedProps?.messages;
+    const timestamp = messages?.[0]?.create_time;
+    if (!timestamp) return;
+    
+    const messageId = generateMessageId(div);
+    if (!messageTimestamps[messageId]) {
+      messageTimestamps[messageId] = new Date(timestamp * 1000).toISOString();
+      saveTimestamps();
     }
-  });
-  
-  // Fallback to original selectors
-  CONFIG.messageSelectors.forEach(selector => {
-    const messages = document.querySelectorAll(selector);
-    messages.forEach(msg => {
-      if (isUserMessage(msg)) {
-        processMessage(msg);
-      }
-    });
+    
+    attachTimestampDisplay(div, messageId);
+    div.dataset.timestampAdded = 'true';
   });
 }
 
-function setupObserver() {
-  new MutationObserver((mutations) => {
-    mutations.forEach((mutation) => {
-      mutation.addedNodes.forEach((node) => {
-        if (node.nodeType === Node.ELEMENT_NODE) {
-          // Check for React messages first
-          if (node.matches && node.matches('div[data-message-id]')) {
-            setTimeout(() => {
-              const reactKey = Object.keys(node).find(k => k.startsWith('__reactFiber$'));
-              if (reactKey) {
-                const fiber = node[reactKey];
-                const messages = fiber?.return?.memoizedProps?.messages;
-                const timestamp = messages?.[0]?.create_time;
-                if (timestamp) {
-                  const messageId = generateMessageId(node);
-                  if (!messageTimestamps[messageId]) {
-                    messageTimestamps[messageId] = new Date(timestamp * 1000).toISOString();
-                    saveTimestamps();
-                  }
-                  attachTimestampDisplay(node, messageId);
-                }
-              }
-            }, 100);
-          }
-          
-          // Fallback to original processing
-          if (isUserMessage(node)) processMessage(node);
-          
-          CONFIG.messageSelectors.forEach(selector => {
-            const messages = node.querySelectorAll?.(selector) || [];
-            messages.forEach(msg => {
-              if (isUserMessage(msg)) processMessage(msg);
-            });
-          });
-        }
-      });
-    });
-    
-    setTimeout(scanForMessages, 500);
-  }).observe(document.querySelector('main') || document.body, {
-    childList: true,
-    subtree: true
-  });
-}
+// Global observer setup
+const observer = new MutationObserver(() => {
+  setTimeout(addTimestamps, 500);
+});
+
+observer.observe(document.body, {
+  childList: true,
+  subtree: true
+});
+
+// Periodic scanning
+setInterval(addTimestamps, 5000);
 
 function setupEventListeners() {
   document.addEventListener('click', (e) => {
@@ -421,12 +385,6 @@ function createSettingsPanel() {
           <span class="timestamp-text" id="preview-text"></span>
         </div>
       </div>
-      
-      <div class="setting-group">
-        <div class="setting-row">
-          <button class="useless-btn" id="useless-button">Do Nothing</button>
-        </div>
-      </div>
     </div>
   `;
   
@@ -538,8 +496,10 @@ function updatePreview() {
 
 function refreshAllTimestamps() {
   document.querySelectorAll('.chatgpt-timestamp-label').forEach(label => label.remove());
-  processedMessages.clear();
-  scanForMessages();
+  document.querySelectorAll('div[data-message-id]').forEach(div => {
+    delete div.dataset.timestampAdded;
+  });
+  addTimestamps();
 }
 
 async function init() {
@@ -547,9 +507,12 @@ async function init() {
   await loadTimestamps();
   createSettingsButton();
   createSettingsPanel();
-  scanForMessages();
-  setupObserver();
   setupEventListeners();
+  
+  // 3-second initial delay
+  setTimeout(() => {
+    addTimestamps();
+  }, 3000);
 }
 
 if (document.readyState === 'loading') {
